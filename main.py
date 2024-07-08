@@ -1,1 +1,11 @@
-# This is a sample Python script.# Press ⌃R to execute it or replace it with your code.# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.def print_hi(name):    # Use a breakpoint in the code line below to debug your script.    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.# Press the green button in the gutter to run the script.if __name__ == '__main__':    print_hi('PyCharm')# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+from ast import main
+import sys
+import os
+file = os.getcwd()
+sys.path.append(file)
+
+from data_collection.data_collection import DataCollection
+
+dc = DataCollection(width=640, height=480, fps=60,
+                        duration=10, num_points=80)
+print(dc.open_camera())
