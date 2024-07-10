@@ -6,5 +6,5 @@
 result_visualization/__pycache__/result_visualization.cpython-312.pyc
 feature_extraction/__pycache__/feature_extraction.cpython-312.pyc
 data_collection/__pycache__/data_collection.cpython-312.pyc
-action_association_analysis/__pycache__/action_association_analysis.cpython-312.pyc
 .idea/inspectionProfiles/Project_Default.xml
+!action_association_analysis/action_association_analysis.py
