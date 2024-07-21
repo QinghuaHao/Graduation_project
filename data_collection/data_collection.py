@@ -6,7 +6,9 @@ import os
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning,
                         module='google.protobuf.symbol_database')
-
+import sys
+file = os.getcwd()
+sys.path.append(file)
 
 class DataCollection:
     def __init__(self, width=640, height=480, sequence_length=60):
@@ -23,7 +25,7 @@ class DataCollection:
         self.sequence_length = sequence_length
         self.recorded_data = []
         self.landmark_trail = []  # 用于记录landmark 8的轨迹
-        self.standard_gestures_dir = '../data/standard_gestures/'
+        self.standard_gestures_dir = "../data/standard_gestures/"
         if not os.path.exists(self.standard_gestures_dir):
             os.makedirs(self.standard_gestures_dir)
 
@@ -57,12 +59,14 @@ class DataCollection:
 
     def load_standard_gestures(self):
         gestures = {}
+        a = os.listdir(self.standard_gestures_dir)
+        print(a)
         for file_name in os.listdir(self.standard_gestures_dir):
-            if file_name.endswith('.csv'):
-                gesture_name = file_name[:-4]
-                df = pd.read_csv(os.path.join(
-                    self.standard_gestures_dir, file_name))
-                gestures[gesture_name] = df[['x','y']]
+            print(file_name)
+            if file_name in ['square.csv', 'cirle.csv']:
+                gesture_name = file_name[:-4]  # 移除 .csv 后缀
+                df = pd.read_csv(os.path.join(self.standard_gestures_dir, file_name))
+                gestures[gesture_name] = df[['x', 'y']]
         return gestures
 
     def detect_gesture(self, df):
@@ -136,19 +140,6 @@ class DataCollection:
         if all(i in landmarks for i in range(5, 21)):
             return True
         return False
-
-    # def draw_trajectory(self, frame):
-    #     frame_height, frame_width, _ = frame.shape
-    #     for i in range(1, len(self.recorded_data)):
-    #         if self.recorded_data[i - 1] is None or self.recorded_data[i] is None:
-    #             continue
-    #         pt1 = (int(self.recorded_data[i - 1]['x'] * frame_width),
-    #                int(self.recorded_data[i - 1]['y'] * frame_height))
-    #         pt2 = (int(self.recorded_data[i]['x'] * frame_width),
-    #                int(self.recorded_data[i]['y'] * frame_height))
-    #         cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
-    #         cv2.circle(frame, pt2, 3, (0, 0, 255), -1)
-    #     return frame
 
     def process_frame(self, frame, frame_count):
         frame = cv2.flip(frame, 1)
@@ -231,7 +222,7 @@ class DataCollection:
 
 
 if __name__ == '__main__':
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
 
     if not cap.isOpened():
         print("Cannot open camera")
