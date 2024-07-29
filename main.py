@@ -4,12 +4,80 @@ import cv2
 import time
 import os
 import sys
+import random
 from action_association_analysis.action_association_analysis import MotionCorrelationEnhanced
 from data_collection.data_collection import DataCollection
-
 file = os.getcwd()
 sys.path.append(file)
+import torch
 
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+# from LSTM_model.LSTM_model_augmented import predict, MotionLSTM, preprocess_input_data
+# def use_model(model_path, input_file):
+#     checkpoint = torch.load(model_path)
+#     model = MotionLSTM(
+#         checkpoint['input_size'],
+#         checkpoint['hidden_size'],
+#         checkpoint['num_layers'],
+#         checkpoint['num_classes']).to(device)
+#     model.load_state_dict(checkpoint['model_state_dict'])
+#     model.eval()
+#
+#     input_data = preprocess_input_data(input_file)
+#     prediction = predict(model, input_data)
+#
+#     labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+#     print(f"The input trajectory is one{labels_text[prediction]}。")
+
+from LSTM_model.LSTM_Model_Improved import ComplexMotionLSTM,predict
+
+def preprocess_input_data(df):
+    if len(df) < 60:
+        raise ValueError(f"Input data size {len(df)} is less than the required size 60")
+    data = df[['x', 'y']].values[:60].reshape(1, 60, 2)
+    return torch.tensor(data, dtype=torch.float32)
+#preprocess data
+def PreProcessData(df):
+    if len(df) < 60:
+        while len(df) < 60:
+            insert_idx = random.randint(1, len(df) - 1)
+            new_row = (df.iloc[insert_idx - 1][['x', 'y']] + df.iloc[insert_idx][['x', 'y']]) / 2
+            new_row = pd.Series(new_row, index=df.columns)
+            df = pd.concat([df.iloc[:insert_idx], pd.DataFrame([new_row]), df.iloc[insert_idx:]], ignore_index=True)
+    elif len(df) > 60:
+        excess_count = len(df) - 60
+        half_excess = excess_count // 2
+
+        # Reduce the first half of the excess rows
+        for i in range(half_excess):
+            df.iloc[i] = df.iloc[2 * i:(2 * i + 2)].mean()
+
+        # Reduce the second half of the excess rows
+        for i in range(half_excess, excess_count):
+            idx = len(df) - 1 - (excess_count - 1 - i)
+            df.iloc[idx] = df.iloc[2 * idx - excess_count:(2 * idx - excess_count + 2)].mean()
+
+        # Drop the averaged excess rows
+        df = df.drop(index=list(range(half_excess)) + list(range(len(df) - excess_count + half_excess, len(df))))
+        df = df.reset_index(drop=True)
+    return df
+
+
+def use_model(model_path, df):
+    checkpoint = torch.load(model_path)
+    model = ComplexMotionLSTM(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    input_data = preprocess_input_data(df)
+    prediction = predict(model, input_data)
+
+    labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+    print(f"The input trajectory is one {labels_text[prediction]}。")
 
 def load_standard_gestures():
     gestures = {}
@@ -36,8 +104,8 @@ def draw_trajectory(frame, recorded_data, frame_width, frame_height):
 
 def main():
     cap = cv2.VideoCapture(1)
-    cap.set(3, 1280)
-    cap.set(4, 1080)
+    # cap.set(3, 1280)
+    # cap.set(4, 1080)
     if not cap.isOpened():
         print("Cannot open camera")
         return
@@ -77,10 +145,12 @@ def main():
                 print("Stopped recording...")
 
                 recorded_data_df = pd.DataFrame(recorded_data)
-                normalized_data = data_collector.normalize_sequence_length(
-                    recorded_data_df)
+                #this preprocesses data
+                normalized_data = PreProcessData(recorded_data_df)
 
                 input_data = normalized_data[['x', 'y']].to_numpy()
+
+                use_model('motion_lstm_model_tuned.pth', normalized_data)
                 standard_gestures = load_standard_gestures()
                 square_data = np.array(standard_gestures['square'])
                 circle_data = np.array(standard_gestures['cirle'])
@@ -104,11 +174,11 @@ def main():
         if is_recording:
             for landmark in frame_landmarks_data:
                 if landmark['landmark'] == 8:
-                    landmark['time'] = frame_count  # 使用帧计数作为时间标签
+                    landmark['time'] = frame_count
                     recorded_data.append(landmark)
 
             df_record_data = pd.DataFrame(recorded_data)
-            df_record_data.to_csv("data/input_data/input.csv", index=False)
+            # df_record_data.to_csv("data/input_data/input.csv", index=False)
 
             frame = draw_trajectory(
                 frame, recorded_data, frame_width, frame_height)
@@ -122,6 +192,9 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
+
+
 
 
 if __name__ == '__main__':
