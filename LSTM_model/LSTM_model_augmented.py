@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import optuna
 from tqdm import tqdm
 import wandb
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 # Use Metal backend on MacBook M1
 if torch.backends.mps.is_available():
@@ -38,7 +39,7 @@ class MotionLSTM(nn.Module):
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
                             batch_first=True, bidirectional=True)
         self.fc1 = nn.Linear(hidden_size * 2, 128)
-        self.relu = nn.ReLU()  # Add ReLU activation function
+        self.relu = nn.ReLU()
         self.fc2 = nn.Linear(128, num_classes)
         self.dropout = nn.Dropout(0.5)
 
@@ -49,41 +50,58 @@ class MotionLSTM(nn.Module):
                          self.hidden_size).to(x.device)
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc1(out[:, -1, :])
-        out = self.relu(out)  # Apply ReLU activation
+        out = self.relu(out)
         out = self.dropout(out)
         out = self.fc2(out)
         return out
 
 
-
-def load_and_preprocess_generated_data(file_paths):
+def load_and_preprocess_generated_data(file_paths, sequence_length=60, num_sequences=900):
     data_frames = []
-    labels = []
     for i, path in enumerate(file_paths):
         df = pd.read_csv(path)
         df['label'] = i
         data_frames.append(df)
+
     combined_df = pd.concat(data_frames)
     combined_df = combined_df[['x', 'y', 'label']]
 
     sequences = []
-    sequence_length = 60
-    num_sequences = 550
-
     for label in combined_df['label'].unique():
         group = combined_df[combined_df['label'] == label]
-        for i in range(0, len(group), sequence_length * num_sequences):
-            segment = group.iloc[i:i + sequence_length * num_sequences]
-            if len(segment) == sequence_length * num_sequences:
-                for j in range(num_sequences):
-                    start = j * sequence_length
-                    end = start + sequence_length
-                    vectors = segment[['x', 'y']].values[start:end]
-                    sequences.append((vectors, label))
+        real_data = group.iloc[:sequence_length * num_sequences]
+        augmented_data = group.iloc[sequence_length * num_sequences: 2 * sequence_length * num_sequences]
+
+        # real data
+        for i in range(0, len(real_data), sequence_length):
+            segment = real_data.iloc[i:i + sequence_length]
+            if len(segment) == sequence_length:
+                vectors = segment[['x', 'y']].values
+                sequences.append((vectors, label))
+
+        # augmented data
+        for i in range(0, len(augmented_data), sequence_length):
+            segment = augmented_data.iloc[i:i + sequence_length]
+            if len(segment) == sequence_length:
+                vectors = segment[['x', 'y']].values
+                sequences.append((vectors, label))
 
     data = np.array([s[0] for s in sequences])
     labels = np.array([s[1] for s in sequences])
-    return data, labels
+
+    # Ensure no data leakage by shuffling before splitting
+    indices = np.arange(len(data))
+    np.random.shuffle(indices)
+    data, labels = data[indices], labels[indices]
+
+    # Split into training, validation, and test sets
+    train_val_split = int(0.8 * len(data))
+    val_test_split = int(0.9 * len(data))  # Corrected the split
+    train_data, train_labels = data[:train_val_split], labels[:train_val_split]
+    val_data, val_labels = data[train_val_split:val_test_split], labels[train_val_split:val_test_split]
+    test_data, test_labels = data[val_test_split:], labels[val_test_split:]
+
+    return train_data, train_labels, val_data, val_labels, test_data, test_labels
 
 
 def preprocess_input_data(input_path):
@@ -94,13 +112,7 @@ def preprocess_input_data(input_path):
     return torch.tensor(data, dtype=torch.float32)
 
 
-def train_model(
-        model,
-        train_loader,
-        criterion,
-        optimizer,
-        scheduler,
-        num_epochs=25):
+def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25):
     train_loss_history = []
     train_accuracy_history = []
 
@@ -110,8 +122,7 @@ def train_model(
         correct = 0
         total = 0
 
-        for inputs, labels in tqdm(
-            train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}', leave=False):
+        for inputs, labels in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}', leave=False):
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -141,6 +152,8 @@ def evaluate_model(model, test_loader, criterion):
     correct = 0
     total = 0
     running_loss = 0.0
+    all_labels = []
+    all_predictions = []
 
     with torch.no_grad():
         for inputs, labels in test_loader:
@@ -152,10 +165,23 @@ def evaluate_model(model, test_loader, criterion):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
+            all_labels.extend(labels.cpu().numpy())
+            all_predictions.extend(predicted.cpu().numpy())
+
     accuracy = correct / total
     loss = running_loss / len(test_loader.dataset)
     wandb.log({'test_loss': loss, 'test_accuracy': accuracy})
     print(f'Test Loss: {loss:.4f}, Test Accuracy: {accuracy:.4f}')
+
+    labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+    cm = confusion_matrix(all_labels, all_predictions)
+    display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels_text)
+    display.plot()
+    title = "Detection"
+    plt.title(f'Confusion Matrix - {title}')
+    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_confusion_matrix.png')
+    plt.show()
+
     return accuracy, loss
 
 
@@ -168,7 +194,6 @@ def predict(model, input_data):
 
 
 def visualize_trajectory(data, labels, model, input_data, prediction, title):
-    # Visualize training data
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     colors = ['r', 'b', 'g', 'y']
     markers = ['o', 's', '^', 'v']
@@ -181,20 +206,18 @@ def visualize_trajectory(data, labels, model, input_data, prediction, title):
     ax[0].set_title('Training Data')
     ax[0].legend()
 
-    # Visualize input trajectory
     input_data_np = input_data.squeeze().cpu().numpy().reshape(-1, 2)
     ax[1].plot(input_data_np[:, 0], input_data_np[:, 1],
                'g-', label='Input Trajectory')
     ax[1].set_title('Input Trajectory')
     ax[1].legend()
 
-    # Prediction result
     predicted_label = labels_text[prediction]
     ax[2].plot(input_data_np[:, 0], input_data_np[:, 1],
                'g-', label=f'Predicted: {predicted_label}')
     ax[2].set_title(f'Prediction - {title}')
     ax[2].legend()
-
+    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_training_progress.png')
     plt.show()
 
 
@@ -212,78 +235,75 @@ def visualize_training_progress(train_loss, train_accuracy, title):
     ax[1].set_xlabel('Epoch')
     ax[1].set_ylabel('Accuracy')
     ax[1].legend()
-
+    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_trajectory.png')
     plt.show()
 
 
-# def objective(trial):
-#     input_size = 2  # x, y 坐标
-#     hidden_size = trial.suggest_int('hidden_size', 32, 128)
-#     num_layers = trial.suggest_int('num_layers', 1, 3)
-#     num_classes = 4  # 圆形, 方形, 三角形, L形
-#
-#     model = MotionLSTM(input_size, hidden_size,
-#                        num_layers, num_classes).to(device)
-#     criterion = nn.CrossEntropyLoss()
-#     optimizer = optim.AdamW(
-#         model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
-#     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-#
-#     train_loss, train_accuracy = train_model(
-#         model, train_loader, criterion, optimizer, scheduler, num_epochs=25)
-#     accuracy, _ = evaluate_model(model, test_loader, criterion)
-#
-#     return accuracy
-#
+def objective(trial):
+    input_size = 2  # x, y coordinates
+    hidden_size = trial.suggest_int('hidden_size', 32, 128)
+    num_layers = trial.suggest_int('num_layers', 1, 3)
+    num_classes = 4  # Circle, Square, Triangle, L Shape
+
+    model = MotionLSTM(input_size, hidden_size,
+                       num_layers, num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(
+        model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+
+    train_loss, train_accuracy = train_model(
+        model, train_loader, criterion, optimizer, scheduler, num_epochs=100)
+    accuracy, _ = evaluate_model(model, test_loader, criterion)
+
+    return accuracy
+
 
 if __name__ == "__main__":
-    #parameter
     wandb.init(
-        project="LSTM-Initial",
+        project="LSTM",
         entity="qinghua_master_project",
         config={
             "learning_rate": 0.001,
             "architecture": "LSTM",
             "dataset": "Generated Motion Data LSTM",
-            "epochs": 100,
+            "epochs": 30,
             "hidden_size": 64,
             "num_layers": 2
         }
     )
-    # file = '../data/standard_gestures/MoreData/more_data_L_shape.csv'
+
     file_paths = [
-        '../data/standard_gestures/MoreData/more_data_circle.csv',
-        '../data/standard_gestures/MoreData/more_data_square.csv',
-        '../data/standard_gestures/MoreData/more_data_triangle.csv',
-        '../data/standard_gestures/MoreData/more_data_L_shape.csv'
+        '../data/standard_gestures/900_Data/circle_augmented_data.csv',
+        '../data/standard_gestures/900_Data/square_augmented_data.csv',
+        '../data/standard_gestures/900_Data/triangl_augmented_data.csv',
+        '../data/standard_gestures/900_Data/L_shape_augmented_data.csv'
     ]
 
+    train_data, train_labels, val_data, val_labels, test_data, test_labels = load_and_preprocess_generated_data(file_paths)
+    train_dataset = MotionDataset(train_data, train_labels)
+    val_dataset = MotionDataset(val_data, val_labels)
+    test_dataset = MotionDataset(test_data, test_labels)
 
-
-    data, labels = load_and_preprocess_generated_data(file_paths)
-    dataset = MotionDataset(data, labels)
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = random_split(
-        dataset, [train_size, test_size])
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    input_size = 2  # x, y coordinate
+    input_size = 2  # x, y coordinates
     hidden_size = wandb.config.hidden_size
     num_layers = wandb.config.num_layers
-    num_classes = 4  #4 calss
+    num_classes = 4  # Circle, Square, Triangle, L Shape
 
-    model = MotionLSTM(input_size, hidden_size,
-                       num_layers, num_classes).to(device)
+    model = MotionLSTM(input_size, hidden_size, num_layers, num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=wandb.config.learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-    train_loss, train_accuracy = train_model(
-        model, train_loader, criterion, optimizer, scheduler, num_epochs=wandb.config.epochs)
+
+    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=wandb.config.epochs)
+    val_accuracy, val_loss = evaluate_model(model, val_loader, criterion)
     test_accuracy, test_loss = evaluate_model(model, test_loader, criterion)
 
-    # 保存训练的模型和超参数
+    # Save the trained model and hyperparameters
     torch.save({
         'model_state_dict': model.state_dict(),
         'input_size': input_size,
@@ -292,72 +312,53 @@ if __name__ == "__main__":
         'num_classes': num_classes
     }, '../motion_lstm_model.pth')
 
-    # 加载训练的模型并对新输入轨迹进行预测
+    # Load the trained model and predict new input trajectory
     checkpoint = torch.load('../motion_lstm_model.pth')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    input_path = '../data/input_data/input.csv'
+    input_path = '../data/standard_gestures/input/circle.csv'
     input_data = preprocess_input_data(input_path)
     prediction = predict(model, input_data)
 
-    visualize_trajectory(data, labels, model, input_data,
-                         prediction, title='Without Hyperparameter Tuning')
-    visualize_training_progress(
-        train_loss, train_accuracy, title='Without Hyperparameter Tuning')
+    visualize_trajectory(train_data, train_labels, model, input_data, prediction, title='Without Hyperparameter Tuning')
+    visualize_training_progress(train_loss, train_accuracy, title='Without Hyperparameter Tuning')
 
-    # study = optuna.create_study(direction='maximize')
-    # study.optimize(objective, n_trials=20)
-    #
-    # print(f'Best trial: {study.best_trial.value}')
-    # print(f'Best params: {study.best_trial.params}')
-    #
-    # best_params = study.best_trial.params
-    # model = MotionLSTM(
-    #     input_size,
-    #     best_params['hidden_size'],
-    #     best_params['num_layers'],
-    #     num_classes).to(device)
-    # optimizer = optim.Adam(model.parameters(), lr=best_params['lr'])
-    #
-    # train_loss_tuned, train_accuracy_tuned = train_model(
-    #     model, train_loader, criterion, optimizer, scheduler, num_epochs=25)
-    # test_accuracy_tuned, test_loss_tuned = evaluate_model(
-    #     model, test_loader, criterion)
-    #
-    # torch.save({
-    #     'model_state_dict': model.state_dict(),
-    #     'input_size': input_size,
-    #     'hidden_size': best_params['hidden_size'],
-    #     'num_layers': best_params['num_layers'],
-    #     'num_classes': num_classes,
-    #     'lr': best_params['lr']
-    # }, '../motion_lstm_model_tuned.pth')
-    #
-    # checkpoint = torch.load('../motion_lstm_model_tuned.pth')
-    # model = MotionLSTM(
-    #     checkpoint['input_size'],
-    #     checkpoint['hidden_size'],
-    #     checkpoint['num_layers'],
-    #     checkpoint['num_classes']).to(device)
-    # model.load_state_dict(checkpoint['model_state_dict'])
-    # model.eval()
-    #
-    # prediction_tuned = predict(model, input_data)
-    # visualize_trajectory(data, labels, model, input_data,
-    #                      prediction_tuned, title='With Hyperparameter Tuning')
-    # visualize_training_progress(
-    #     train_loss_tuned,
-    #     train_accuracy_tuned,
-    #     title='With Hyperparameter Tuning')
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=20)
+
+    print(f'Best trial: {study.best_trial.value}')
+    print(f'Best params: {study.best_trial.params}')
+
+    best_params = study.best_trial.params
+    model = MotionLSTM(input_size, best_params['hidden_size'], best_params['num_layers'], num_classes).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=best_params['lr'])
+
+    train_loss_tuned, train_accuracy_tuned = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25)
+    val_accuracy_tuned, val_loss_tuned = evaluate_model(model, val_loader, criterion)
+    test_accuracy_tuned, test_loss_tuned = evaluate_model(model, test_loader, criterion)
+
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'input_size': input_size,
+        'hidden_size': best_params['hidden_size'],
+        'num_layers': best_params['num_layers'],
+        'num_classes': num_classes,
+        'lr': best_params['lr']
+    }, '../motion_lstm_model_tuned.pth')
+
+    checkpoint = torch.load('../motion_lstm_model_tuned.pth')
+    model = MotionLSTM(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    prediction_tuned = predict(model, input_data)
+    visualize_trajectory(train_data, train_labels, model, input_data, prediction_tuned, title='With Hyperparameter Tuning')
+    visualize_training_progress(train_loss_tuned, train_accuracy_tuned, title='With Hyperparameter Tuning')
 
     def use_model(model_path, input_path):
         checkpoint = torch.load(model_path)
-        model = MotionLSTM(
-            checkpoint['input_size'],
-            checkpoint['hidden_size'],
-            checkpoint['num_layers'],
-            checkpoint['num_classes']).to(device)
+        model = MotionLSTM(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 
@@ -365,6 +366,6 @@ if __name__ == "__main__":
         prediction = predict(model, input_data)
 
         labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
-        print(f"the trajectory is {labels_text[prediction]}。")
+        print(f"The input trajectory is one {labels_text[prediction]}.")
 
-    use_model('../motion_lstm_model_tuned.pth', '../data/input_data/input.csv')
+    use_model('../motion_lstm_model_tuned.pth', '../data/standard_gestures/input/circle.csv')

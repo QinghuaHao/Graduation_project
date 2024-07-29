@@ -7,10 +7,6 @@ import datetime
 import warnings
 import absl.logging
 import random
-warnings.filterwarnings(
-    'ignore',
-    category=UserWarning,
-    module='google.protobuf.symbol_database')
 
 absl.logging.set_verbosity(absl.logging.INFO)
 
@@ -31,7 +27,7 @@ class DataCollection:
         self.sequence_length = sequence_length
         self.recorded_data = []
         self.landmark_trail = []  # 用于记录landmark 8的轨迹
-        self.standard_gestures_dir = '../data/standard_gestures/L_shape'
+        self.standard_gestures_dir = '../data/standard_gestures/circle'#修改数据位置
         if not os.path.exists(self.standard_gestures_dir):
             os.makedirs(self.standard_gestures_dir)
 
@@ -50,31 +46,12 @@ class DataCollection:
         self.landmark_trail = []
 
     def normalize_sequence_length(self, df):
-        current_length = len(df)
-        if current_length > self.sequence_length:
-            excess_length = current_length - self.sequence_length
-            front_excess = excess_length // 2
-            rear_excess = excess_length - front_excess
-
-            # 前面多余的数据取平均值
-            front_avg = df.iloc[:front_excess].mean()
-            # 中间保留的数据
-            middle_df = df.iloc[front_excess:current_length - rear_excess]
-            # 后面多余的数据取平均值
-            rear_avg = df.iloc[current_length - rear_excess:].mean()
-
-            # 构造新的DataFrame
-            normalized_df = pd.concat(
-                [pd.DataFrame([front_avg]), middle_df, pd.DataFrame([rear_avg])],
-                ignore_index=True
-            )
-            return normalized_df.reset_index(drop=True)
-        else:
-            while len(df) < self.sequence_length:
-                insert_idx = random.randint(1, len(df) - 1)
-                new_row = (df.iloc[insert_idx - 1] + df.iloc[insert_idx]) / 2
-                df = pd.concat([df.iloc[:insert_idx], pd.DataFrame([new_row]), df.iloc[insert_idx:]], ignore_index=True)
-            return df
+        while len(df) < self.sequence_length:
+            insert_idx = random.randint(1, len(df) - 1)
+            new_row = (df.iloc[insert_idx - 1][['x', 'y']] + df.iloc[insert_idx][['x', 'y']]) / 2
+            new_row = pd.Series(new_row, index=df.columns)
+            df = pd.concat([df.iloc[:insert_idx], pd.DataFrame([new_row]), df.iloc[insert_idx:]], ignore_index=True)
+        return df.reset_index(drop=True)
 
     def save_standard_gesture(self, df):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -119,6 +96,11 @@ class DataCollection:
                     for landmark_id, landmark in enumerate(
                             closest_hand_landmarks.landmark):
                         landmark_data = {
+                            'frame': frame_count,
+                            'hand': 0,  # or other value depending on your requirement
+                            'landmark': landmark_id,
+                            'x': landmark.x,
+                            'y': landmark.y,
                         }
                         frame_landmarks_data.append(landmark_data)
                         if self.recording and landmark_id == 8:
