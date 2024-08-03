@@ -254,7 +254,7 @@ def objective(trial):
     optimizer = optim.AdamW(model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=100)
+    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=60)
     accuracy, _ = evaluate_model(model, test_loader, criterion)
 
     return accuracy
@@ -267,7 +267,7 @@ if __name__ == "__main__":
             "learning_rate": 0.001,
             "architecture": "LSTM",
             "dataset": "Generated Motion Data LSTM",
-            "epochs": 30,
+            "epochs": 60,
             "hidden_size": 128,  # change this to improve our model
             "num_layers": 2  # change this to improve our model
         }

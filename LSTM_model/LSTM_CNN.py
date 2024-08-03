@@ -1,21 +1,20 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import optuna
-from tqdm import tqdm
 import wandb
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from tqdm import tqdm
+import optuna
 
 # Use Metal backend on MacBook M1
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 else:
     device = torch.device("cpu")
-
 
 class MotionDataset(Dataset):
     def __init__(self, data, labels):
@@ -30,31 +29,42 @@ class MotionDataset(Dataset):
         label = torch.tensor(self.labels[idx], dtype=torch.long)
         return sample, label
 
-
-class MotionLSTM(nn.Module):
+class LSTMCNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(MotionLSTM, self).__init__()
+        super(LSTMCNN, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
-                            batch_first=True, bidirectional=True)
-        self.fc1 = nn.Linear(hidden_size * 2, 128)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.cnn = nn.Sequential(
+            nn.Conv1d(in_channels=hidden_size * 2, out_channels=64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2, stride=2),
+            nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2, stride=2)
+        )
+        self.fc1 = nn.Linear(128 * (60 // 4), 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, num_classes)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(128, num_classes)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout1 = nn.Dropout(0.5)
+        self.dropout2 = nn.Dropout(0.5)
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers * 2, x.size(0),
-                         self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers * 2, x.size(0),
-                         self.hidden_size).to(x.device)
+        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
         out, _ = self.lstm(x, (h0, c0))
-        out = self.fc1(out[:, -1, :])
+        out = out.permute(0, 2, 1)  # Change shape to (batch, hidden_size*2, sequence_length) for CNN
+        out = self.cnn(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc1(out)
         out = self.relu(out)
-        out = self.dropout(out)
+        out = self.dropout1(out)
         out = self.fc2(out)
+        out = self.relu(out)
+        out = self.dropout2(out)
+        out = self.fc3(out)
         return out
-
 
 def load_and_preprocess_generated_data(file_paths, sequence_length=60, num_sequences=900):
     data_frames = []
@@ -96,13 +106,12 @@ def load_and_preprocess_generated_data(file_paths, sequence_length=60, num_seque
 
     # Split into training, validation, and test sets
     train_val_split = int(0.8 * len(data))
-    val_test_split = int(0.9 * len(data))  # Corrected the split
+    val_test_split = int(0.1 * len(data)) + train_val_split
     train_data, train_labels = data[:train_val_split], labels[:train_val_split]
     val_data, val_labels = data[train_val_split:val_test_split], labels[train_val_split:val_test_split]
     test_data, test_labels = data[val_test_split:], labels[val_test_split:]
 
     return train_data, train_labels, val_data, val_labels, test_data, test_labels
-
 
 def preprocess_input_data(input_path):
     df = pd.read_csv(input_path)
@@ -110,7 +119,6 @@ def preprocess_input_data(input_path):
         raise ValueError(f"Input data size {len(df)} is less than the required size 60")
     data = df[['x', 'y']].values[:60].reshape(1, 60, 2)
     return torch.tensor(data, dtype=torch.float32)
-
 
 def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25):
     train_loss_history = []
@@ -146,7 +154,6 @@ def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs
 
     return train_loss_history, train_accuracy_history
 
-
 def evaluate_model(model, test_loader, criterion):
     model.eval()
     correct = 0
@@ -174,16 +181,20 @@ def evaluate_model(model, test_loader, criterion):
     print(f'Test Loss: {loss:.4f}, Test Accuracy: {accuracy:.4f}')
 
     labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+    unique_classes = np.unique(np.concatenate((all_labels, all_predictions)))
+    if len(unique_classes) < len(labels_text):
+        all_labels = np.append(all_labels, [label for label in range(len(labels_text)) if label not in unique_classes])
+        all_predictions = np.append(all_predictions, [label for label in range(len(labels_text)) if label not in unique_classes])
+
     cm = confusion_matrix(all_labels, all_predictions)
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels_text)
     display.plot()
     title = "Detection"
     plt.title(f'Confusion Matrix - {title}')
-    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_confusion_matrix.png')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_confusion_matrix.png')
     plt.show()
 
     return accuracy, loss
-
 
 def predict(model, input_data):
     input_data = input_data.to(device)
@@ -192,8 +203,8 @@ def predict(model, input_data):
         _, predicted = torch.max(output, 1)
     return predicted.item()
 
-
 def visualize_trajectory(data, labels, model, input_data, prediction, title):
+    # Visualize training data
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     colors = ['r', 'b', 'g', 'y']
     markers = ['o', 's', '^', 'v']
@@ -206,20 +217,21 @@ def visualize_trajectory(data, labels, model, input_data, prediction, title):
     ax[0].set_title('Training Data')
     ax[0].legend()
 
+    # Visualize input trajectory
     input_data_np = input_data.squeeze().cpu().numpy().reshape(-1, 2)
     ax[1].plot(input_data_np[:, 0], input_data_np[:, 1],
                'g-', label='Input Trajectory')
     ax[1].set_title('Input Trajectory')
     ax[1].legend()
 
+    # Prediction result
     predicted_label = labels_text[prediction]
     ax[2].plot(input_data_np[:, 0], input_data_np[:, 1],
                'g-', label=f'Predicted: {predicted_label}')
     ax[2].set_title(f'Prediction - {title}')
     ax[2].legend()
-    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_training_progress.png')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_training_progress.png')
     plt.show()
-
 
 def visualize_training_progress(train_loss, train_accuracy, title):
     fig, ax = plt.subplots(1, 2, figsize=(12, 4))
@@ -235,41 +247,36 @@ def visualize_training_progress(train_loss, train_accuracy, title):
     ax[1].set_xlabel('Epoch')
     ax[1].set_ylabel('Accuracy')
     ax[1].legend()
-    plt.savefig(f'../data/out_put_image/LSTM_model/{title}_trajectory.png')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_trajectory.png')
     plt.show()
-
 
 def objective(trial):
     input_size = 2  # x, y coordinates
-    hidden_size = trial.suggest_int('hidden_size', 32, 128)
-    num_layers = trial.suggest_int('num_layers', 1, 3)
+    hidden_size = trial.suggest_int('hidden_size', 64, 256)
+    num_layers = trial.suggest_int('num_layers', 2, 5)
     num_classes = 4  # Circle, Square, Triangle, L Shape
 
-    model = MotionLSTM(input_size, hidden_size,
-                       num_layers, num_classes).to(device)
+    model = LSTMCNN(input_size, hidden_size, num_layers, num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
+    optimizer = optim.AdamW(model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    train_loss, train_accuracy = train_model(
-        model, train_loader, criterion, optimizer, scheduler, num_epochs=60)
+    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=60)
     accuracy, _ = evaluate_model(model, test_loader, criterion)
 
     return accuracy
 
-
 if __name__ == "__main__":
     wandb.init(
-        project="LSTM",
+        project="LSTM_CNN",
         entity="qinghua_master_project",
         config={
             "learning_rate": 0.001,
-            "architecture": "LSTM",
-            "dataset": "Generated Motion Data LSTM",
+            "architecture": "LSTM-CNN",
+            "dataset": "Generated Motion Data LSTM-CNN",
             "epochs": 60,
-            "hidden_size": 64,
-            "num_layers": 2
+            "hidden_size": 128,  # change this to improve our model
+            "num_layers": 2  # change this to improve our model
         }
     )
 
@@ -279,6 +286,8 @@ if __name__ == "__main__":
         '../data/standard_gestures/900_Data/triangl_augmented_data.csv',
         '../data/standard_gestures/900_Data/L_shape_augmented_data.csv'
     ]
+
+    sequence_length = 60
 
     train_data, train_labels, val_data, val_labels, test_data, test_labels = load_and_preprocess_generated_data(file_paths)
     train_dataset = MotionDataset(train_data, train_labels)
@@ -294,13 +303,11 @@ if __name__ == "__main__":
     num_layers = wandb.config.num_layers
     num_classes = 4  # Circle, Square, Triangle, L Shape
 
-    model = MotionLSTM(input_size, hidden_size, num_layers, num_classes).to(device)
+    model = LSTMCNN(input_size, hidden_size, num_layers, num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=wandb.config.learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-
     train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=wandb.config.epochs)
-    val_accuracy, val_loss = evaluate_model(model, val_loader, criterion)
     test_accuracy, test_loss = evaluate_model(model, test_loader, criterion)
 
     # Save the trained model and hyperparameters
@@ -310,10 +317,10 @@ if __name__ == "__main__":
         'hidden_size': hidden_size,
         'num_layers': num_layers,
         'num_classes': num_classes
-    }, '../motion_lstm_model.pth')
+    }, '../complex_motion_lstm_cnn_model.pth')
 
     # Load the trained model and predict new input trajectory
-    checkpoint = torch.load('../motion_lstm_model.pth')
+    checkpoint = torch.load('../complex_motion_lstm_cnn_model.pth')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
@@ -331,11 +338,10 @@ if __name__ == "__main__":
     print(f'Best params: {study.best_trial.params}')
 
     best_params = study.best_trial.params
-    model = MotionLSTM(input_size, best_params['hidden_size'], best_params['num_layers'], num_classes).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=best_params['lr'])
+    model = LSTMCNN(input_size, best_params['hidden_size'], best_params['num_layers'], num_classes).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=best_params['lr'])
 
     train_loss_tuned, train_accuracy_tuned = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25)
-    val_accuracy_tuned, val_loss_tuned = evaluate_model(model, val_loader, criterion)
     test_accuracy_tuned, test_loss_tuned = evaluate_model(model, test_loader, criterion)
 
     torch.save({
@@ -345,10 +351,10 @@ if __name__ == "__main__":
         'num_layers': best_params['num_layers'],
         'num_classes': num_classes,
         'lr': best_params['lr']
-    }, '../motion_lstm_model_tuned.pth')
+    }, '../motion_complex_lstm_cnn_model_tuned.pth')
 
-    checkpoint = torch.load('../motion_lstm_model_tuned.pth')
-    model = MotionLSTM(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
+    checkpoint = torch.load('../motion_complex_lstm_cnn_model_tuned.pth')
+    model = LSTMCNN(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
@@ -356,16 +362,16 @@ if __name__ == "__main__":
     visualize_trajectory(train_data, train_labels, model, input_data, prediction_tuned, title='With Hyperparameter Tuning')
     visualize_training_progress(train_loss_tuned, train_accuracy_tuned, title='With Hyperparameter Tuning')
 
-    def use_model(model_path, input_path):
-        checkpoint = torch.load(model_path)
-        model = MotionLSTM(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
+def use_model(model_path, input_path):
+    checkpoint = torch.load(model_path)
+    model = LSTMCNN(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
 
-        input_data = preprocess_input_data(input_path)
-        prediction = predict(model, input_data)
+    input_data = preprocess_input_data(input_path)
+    prediction = predict(model, input_data)
 
-        labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
-        print(f"The input trajectory is one {labels_text[prediction]}.")
+    labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+    print(f"输入轨迹是一个{labels_text[prediction]}。")
 
-    use_model('../motion_lstm_model_tuned.pth', '../data/standard_gestures/input/circle.csv')
+# use_model('../motion_lstm_cnn_model_tuned.pth', '../data/standard_gestures/input/circle.csv')
