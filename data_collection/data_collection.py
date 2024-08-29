@@ -24,7 +24,7 @@ class DataCollection:
         self.initial_hand_wrist_coords = None
         self.sequence_length = sequence_length
         self.recorded_data = []
-        self.landmark_trail = []  #
+        self.landmark_trail = []
         self.standard_gestures_dir = "../data/standard_gestures/"
         if not os.path.exists(self.standard_gestures_dir):
             os.makedirs(self.standard_gestures_dir)
@@ -45,10 +45,10 @@ class DataCollection:
     def normalize_sequence_length(self, df):
         current_length = len(df)
         if current_length > self.sequence_length:
-            return df.iloc[:self.sequence_length]  #
+            return df.iloc[:self.sequence_length]
         else:
             pad_length = self.sequence_length - current_length
-            padding = pd.DataFrame([df.iloc[-1]] * pad_length)  # fill with final 
+            padding = pd.DataFrame([df.iloc[-1]] * pad_length)
             return pd.concat([df, padding], ignore_index=True)
 
     def save_standard_gesture(self, gesture_name, df):
@@ -57,17 +57,27 @@ class DataCollection:
         df.to_csv(file_path, index=False)
         print(f"Gesture {gesture_name} saved to {file_path}")
 
-    def load_standard_gestures(self):
-        gestures = {}
-        a = os.listdir(self.standard_gestures_dir)
-        print(a)
-        for file_name in os.listdir(self.standard_gestures_dir):
-            print(file_name)
-            if file_name in ['square.csv', 'cirle.csv']:
-                gesture_name = file_name[:-4]  # 移除 .csv 后缀
-                df = pd.read_csv(os.path.join(self.standard_gestures_dir, file_name))
-                gestures[gesture_name] = df[['x', 'y']]
-        return gestures
+    def is_index_finger_up(self, landmarks):
+
+        if all(i in landmarks for i in [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]):
+            index_tip = np.array(landmarks[8])
+            index_pip = np.array(landmarks[6])
+            middle_tip = np.array(landmarks[12])
+            ring_tip = np.array(landmarks[16])
+            pinky_tip = np.array(landmarks[20])
+
+            if (index_tip[1] < index_pip[1] and
+                    middle_tip[1] > index_tip[1] and
+                    ring_tip[1] > index_tip[1] and
+                    pinky_tip[1] > index_tip[1]):
+
+                middle_bent = landmarks[12][1] > landmarks[10][1]
+                ring_bent = landmarks[16][1] > landmarks[14][1]
+                pinky_bent = landmarks[20][1] > landmarks[18][1]
+
+                if middle_bent and ring_bent and pinky_bent:
+                    return True
+        return False
 
     def detect_gesture(self, df):
         if df.empty:
@@ -75,70 +85,16 @@ class DataCollection:
 
         landmarks = {row['landmark']: (row['x'], row['y'])
                      for _, row in df.iterrows()}
-        if self.is_ok_gesture(landmarks):
-            return 'OK'
-        elif self.is_victory_gesture(landmarks):
-            return 'Victory'
-        elif self.is_thumbs_up_gesture(landmarks):
-            return 'Thumbs Up'
-        elif self.is_thumbs_down_gesture(landmarks):
-            return 'Thumbs Down'
+        if self.is_index_finger_up(landmarks):
+            return 'Index Finger Up'
         elif self.is_fist_gesture(landmarks):
             return 'Fist'
-        elif self.is_five_gesture(landmarks):
-            return 'Five'
         else:
             return 'None'
 
-    def is_ok_gesture(self, landmarks):
-        if 4 in landmarks and 8 in landmarks:
-            thumb_tip = np.array(landmarks[4])
-            index_tip = np.array(landmarks[8])
-            distance = np.linalg.norm(thumb_tip - index_tip)
-            if distance < 0.05:  # Threshold for OK gesture
-                return True
-        return False
-
-    def is_victory_gesture(self, landmarks):
-        if 8 in landmarks and 12 in landmarks:
-            index_tip = np.array(landmarks[8])
-            middle_tip = np.array(landmarks[12])
-            distance = np.linalg.norm(index_tip - middle_tip)
-            if distance > 0.1:  # Threshold for Victory gesture
-                return True
-        return False
-
-    def is_thumbs_up_gesture(self, landmarks):
-        if 4 in landmarks and 3 in landmarks and 2 in landmarks:
-            thumb_tip = np.array(landmarks[4])
-            thumb_ip = np.array(landmarks[3])
-            thumb_mcp = np.array(landmarks[2])
-            # Check if thumb is pointing upwards
-            if thumb_tip[1] < thumb_ip[1] < thumb_mcp[1]:
-                return True
-        return False
-
-    def is_thumbs_down_gesture(self, landmarks):
-        if 4 in landmarks and 3 in landmarks and 2 in landmarks:
-            thumb_tip = np.array(landmarks[4])
-            thumb_ip = np.array(landmarks[3])
-            thumb_mcp = np.array(landmarks[2])
-            # Check if thumb is pointing downwards
-            if thumb_tip[1] > thumb_ip[1] > thumb_mcp[1]:
-                return True
-        return False
-
     def is_fist_gesture(self, landmarks):
-        for i in range(5, 21):
-            if i in landmarks:
-                x, y = landmarks[i]
-                if y < landmarks[0][1]:
-                    return False
-        return True
-
-    def is_five_gesture(self, landmarks):
-        if all(i in landmarks for i in range(5, 21)):
-            return True
+        if all(i in landmarks for i in range(8, 21, 4)):
+            return all(landmarks[i][1] > landmarks[i - 3][1] for i in range(8, 21, 4))  # all fingertips below knuckles
         return False
 
     def process_frame(self, frame, frame_count):
@@ -185,11 +141,9 @@ class DataCollection:
                             x, y = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
                             self.landmark_trail.append((x, y))
 
-        # draw trajectory 
         if self.recording and len(self.landmark_trail) > 1:
             for i in range(1, len(self.landmark_trail)):
                 cv2.line(frame, self.landmark_trail[i - 1], self.landmark_trail[i], (0, 255, 0), 2)
-
 
         return frame, frame_landmarks_data
 

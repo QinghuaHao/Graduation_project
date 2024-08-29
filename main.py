@@ -247,13 +247,13 @@ def main():
 
         if frame_landmarks_data:
             key = cv2.waitKey(1)
-            if detected_gesture == 'Victory' and not is_recording:
+            if detected_gesture == 'Index Finger Up' and not is_recording:
                 is_recording = True
                 recorded_data = []
-                frame_count = 0
+                frame_counqt = 0
                 print("Started recording...")
 
-            elif detected_gesture == 'Thumbs Up' and is_recording:
+            elif detected_gesture == 'Fist' and is_recording:
                 is_recording = False
                 print("Stopped recording...")
 
