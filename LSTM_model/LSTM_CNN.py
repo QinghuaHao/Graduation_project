@@ -9,7 +9,7 @@ import wandb
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from tqdm import tqdm
 import optuna
-
+from sklearn.metrics import precision_recall_fscore_support
 # Use Metal backend on MacBook M1
 if torch.backends.mps.is_available():
     device = torch.device("mps")
@@ -120,7 +120,7 @@ def preprocess_input_data(input_path):
     data = df[['x', 'y']].values[:60].reshape(1, 60, 2)
     return torch.tensor(data, dtype=torch.float32)
 
-def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25):
+def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=30):
     train_loss_history = []
     train_accuracy_history = []
 
@@ -154,7 +154,8 @@ def train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs
 
     return train_loss_history, train_accuracy_history
 
-def evaluate_model(model, test_loader, criterion):
+
+def evaluate_model(model, test_loader, criterion, prefix=''):
     model.eval()
     correct = 0
     total = 0
@@ -177,24 +178,56 @@ def evaluate_model(model, test_loader, criterion):
 
     accuracy = correct / total
     loss = running_loss / len(test_loader.dataset)
-    wandb.log({'test_loss': loss, 'test_accuracy': accuracy})
-    print(f'Test Loss: {loss:.4f}, Test Accuracy: {accuracy:.4f}')
+    precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_predictions, average=None)
+    wandb.log({f'{prefix}test_loss': loss, f'{prefix}test_accuracy': accuracy})
+    print(f'{prefix} Test Loss: {loss:.4f}, Test Accuracy: {accuracy:.4f}')
+    print(f'{prefix} Precision: {precision}')
+    print(f'{prefix} Recall: {recall}')
+    print(f'{prefix} F1 Score: {f1}')
 
+    # Confusion Matrix
     labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
     unique_classes = np.unique(np.concatenate((all_labels, all_predictions)))
     if len(unique_classes) < len(labels_text):
         all_labels = np.append(all_labels, [label for label in range(len(labels_text)) if label not in unique_classes])
-        all_predictions = np.append(all_predictions, [label for label in range(len(labels_text)) if label not in unique_classes])
+        all_predictions = np.append(all_predictions,
+                                    [label for label in range(len(labels_text)) if label not in unique_classes])
 
     cm = confusion_matrix(all_labels, all_predictions)
     display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels_text)
     display.plot()
-    title = "Detection"
-    plt.title(f'Confusion Matrix - {title}')
-    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_confusion_matrix.png')
+    plt.title(f'{prefix} Confusion Matrix')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN_25/{prefix}confusion_matrix.png')
     plt.show()
 
-    return accuracy, loss
+    return accuracy, loss, precision, recall, f1
+
+
+def visualize_metrics(precision, recall, f1, title, prefix=''):
+    labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
+    x = np.arange(len(labels_text))  # Label locations
+    width = 0.25  # Bar width
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    ax.bar(x - width, precision, width, label='Precision')
+    ax.bar(x, recall, width, label='Recall')
+    ax.bar(x + width, f1, width, label='F1 Score')
+
+    ax.set_xlabel('Classes')
+    ax.set_ylabel('Scores')
+    ax.set_title(f'{title} - Metrics')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels_text)
+    ax.legend()
+
+    for i in range(len(precision)):
+        ax.text(i - width, precision[i] + 0.01, f'{precision[i]:.2f}', ha='center', va='bottom')
+        ax.text(i, recall[i] + 0.01, f'{recall[i]:.2f}', ha='center', va='bottom')
+        ax.text(i + width, f1[i] + 0.01, f'{f1[i]:.2f}', ha='center', va='bottom')
+
+    plt.savefig(f'../data/out_put_image/LSTM_CNN_25/{prefix}{title}_metrics.png')
+    plt.show()
 
 def predict(model, input_data):
     input_data = input_data.to(device)
@@ -203,7 +236,7 @@ def predict(model, input_data):
         _, predicted = torch.max(output, 1)
     return predicted.item()
 
-def visualize_trajectory(data, labels, model, input_data, prediction, title):
+def visualize_trajectory(data, labels, model, input_data, prediction, title, prefix=''):
     # Visualize training data
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     colors = ['r', 'b', 'g', 'y']
@@ -230,10 +263,10 @@ def visualize_trajectory(data, labels, model, input_data, prediction, title):
                'g-', label=f'Predicted: {predicted_label}')
     ax[2].set_title(f'Prediction - {title}')
     ax[2].legend()
-    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_training_progress.png')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN_25/{prefix}{title}_training_progress.png')
     plt.show()
 
-def visualize_training_progress(train_loss, train_accuracy, title):
+def visualize_training_progress(train_loss, train_accuracy, title, prefix=''):
     fig, ax = plt.subplots(1, 2, figsize=(12, 4))
 
     ax[0].plot(train_loss, label='Train Loss')
@@ -247,7 +280,7 @@ def visualize_training_progress(train_loss, train_accuracy, title):
     ax[1].set_xlabel('Epoch')
     ax[1].set_ylabel('Accuracy')
     ax[1].legend()
-    plt.savefig(f'../data/out_put_image/LSTM_CNN/{title}_trajectory.png')
+    plt.savefig(f'../data/out_put_image/LSTM_CNN_25/{prefix}{title}_trajectory.png')
     plt.show()
 
 def objective(trial):
@@ -261,8 +294,8 @@ def objective(trial):
     optimizer = optim.AdamW(model.parameters(), lr=trial.suggest_float('lr', 1e-4, 1e-2))
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=60)
-    accuracy, _ = evaluate_model(model, test_loader, criterion)
+    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=30)
+    accuracy, _,_,_,_= evaluate_model(model, test_loader, criterion)
 
     return accuracy
 
@@ -274,7 +307,7 @@ if __name__ == "__main__":
             "learning_rate": 0.001,
             "architecture": "LSTM-CNN",
             "dataset": "Generated Motion Data LSTM-CNN",
-            "epochs": 60,
+            "epochs": 30,
             "hidden_size": 128,  # change this to improve our model
             "num_layers": 2  # change this to improve our model
         }
@@ -307,20 +340,25 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=wandb.config.learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=wandb.config.epochs)
-    test_accuracy, test_loss = evaluate_model(model, test_loader, criterion)
 
-    # Save the trained model and hyperparameters
+    # Train and evaluate model before hyperparameter tuning
+    train_loss, train_accuracy = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=wandb.config.epochs)
+    test_accuracy, test_loss, precision_before, recall_before, f1_before = evaluate_model(model, test_loader, criterion,
+                                                                                          prefix='before_')
+    visualize_metrics(precision_before, recall_before, f1_before, title='Without Hyperparameter Tuning',
+                      prefix='before_')
+
+    # Save the trained model before hyperparameter tuning
     torch.save({
         'model_state_dict': model.state_dict(),
         'input_size': input_size,
         'hidden_size': hidden_size,
         'num_layers': num_layers,
         'num_classes': num_classes
-    }, '../complex_motion_lstm_cnn_model.pth')
+    }, 'Saved_Model/motion_lstm_cnn_model_25.pth')
 
-    # Load the trained model and predict new input trajectory
-    checkpoint = torch.load('../complex_motion_lstm_cnn_model.pth')
+    # Load and predict using the saved model before hyperparameter tuning
+    checkpoint = torch.load('Saved_Model/motion_lstm_cnn_model_25.pth')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
@@ -328,9 +366,10 @@ if __name__ == "__main__":
     input_data = preprocess_input_data(input_path)
     prediction = predict(model, input_data)
 
-    visualize_trajectory(train_data, train_labels, model, input_data, prediction, title='Without Hyperparameter Tuning')
-    visualize_training_progress(train_loss, train_accuracy, title='Without Hyperparameter Tuning')
+    visualize_trajectory(train_data, train_labels, model, input_data, prediction, title='Without Hyperparameter Tuning', prefix='before_')
+    visualize_training_progress(train_loss, train_accuracy, title='Without Hyperparameter Tuning', prefix='before_')
 
+    # Hyperparameter tuning with Optuna
     study = optuna.create_study(direction='maximize')
     study.optimize(objective, n_trials=20)
 
@@ -341,9 +380,14 @@ if __name__ == "__main__":
     model = LSTMCNN(input_size, best_params['hidden_size'], best_params['num_layers'], num_classes).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=best_params['lr'])
 
-    train_loss_tuned, train_accuracy_tuned = train_model(model, train_loader, criterion, optimizer, scheduler, num_epochs=25)
-    test_accuracy_tuned, test_loss_tuned = evaluate_model(model, test_loader, criterion)
-
+    # Train and evaluate the model after hyperparameter tuning
+    train_loss_tuned, train_accuracy_tuned = train_model(model, train_loader, criterion, optimizer, scheduler,
+                                                         num_epochs=30)
+    test_accuracy_tuned, test_loss_tuned, precision_after, recall_after, f1_after = evaluate_model(model, test_loader,
+                                                                                                   criterion,
+                                                                                                   prefix='after_')
+    visualize_metrics(precision_after, recall_after, f1_after, title='With Hyperparameter Tuning', prefix='after_')
+    # Save the trained model and hyperparameters after tuning
     torch.save({
         'model_state_dict': model.state_dict(),
         'input_size': input_size,
@@ -351,16 +395,17 @@ if __name__ == "__main__":
         'num_layers': best_params['num_layers'],
         'num_classes': num_classes,
         'lr': best_params['lr']
-    }, '../motion_complex_lstm_cnn_model_tuned.pth')
+    }, 'Saved_Model/motion_lstm_cnn_model_tuned_25.pth')
 
-    checkpoint = torch.load('../motion_complex_lstm_cnn_model_tuned.pth')
+    # Load and predict using the tuned model
+    checkpoint = torch.load('Saved_Model/motion_lstm_cnn_model_tuned_25.pth')
     model = LSTMCNN(checkpoint['input_size'], checkpoint['hidden_size'], checkpoint['num_layers'], checkpoint['num_classes']).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
     prediction_tuned = predict(model, input_data)
-    visualize_trajectory(train_data, train_labels, model, input_data, prediction_tuned, title='With Hyperparameter Tuning')
-    visualize_training_progress(train_loss_tuned, train_accuracy_tuned, title='With Hyperparameter Tuning')
+    visualize_trajectory(train_data, train_labels, model, input_data, prediction_tuned, title='With Hyperparameter Tuning', prefix='after_')
+    visualize_training_progress(train_loss_tuned, train_accuracy_tuned, title='With Hyperparameter Tuning', prefix='after_')
 
 def use_model(model_path, input_path):
     checkpoint = torch.load(model_path)
@@ -372,6 +417,7 @@ def use_model(model_path, input_path):
     prediction = predict(model, input_data)
 
     labels_text = ['Circle', 'Square', 'Triangle', 'L Shape']
-    print(f"输入轨迹是一个{labels_text[prediction]}。")
+    print(f"The trajectory is one {labels_text[prediction]}.")
 
-# use_model('../motion_lstm_cnn_model_tuned.pth', '../data/standard_gestures/input/circle.csv')
+# Example usage:
+# use_model('../motion_model_tuned_30.pth', '../data/standard_gestures/input/circle.csv')

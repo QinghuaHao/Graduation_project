@@ -24,7 +24,7 @@ class DataCollection:
         self.initial_hand_wrist_coords = None
         self.sequence_length = sequence_length
         self.recorded_data = []
-        self.landmark_trail = []  # 用于记录landmark 8的轨迹
+        self.landmark_trail = []  #
         self.standard_gestures_dir = "../data/standard_gestures/"
         if not os.path.exists(self.standard_gestures_dir):
             os.makedirs(self.standard_gestures_dir)
@@ -45,10 +45,10 @@ class DataCollection:
     def normalize_sequence_length(self, df):
         current_length = len(df)
         if current_length > self.sequence_length:
-            return df.iloc[:self.sequence_length]  # 截断
+            return df.iloc[:self.sequence_length]  #
         else:
             pad_length = self.sequence_length - current_length
-            padding = pd.DataFrame([df.iloc[-1]] * pad_length)  # 用最后一帧填充
+            padding = pd.DataFrame([df.iloc[-1]] * pad_length)  # fill with final 
             return pd.concat([df, padding], ignore_index=True)
 
     def save_standard_gesture(self, gesture_name, df):
@@ -185,7 +185,7 @@ class DataCollection:
                             x, y = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
                             self.landmark_trail.append((x, y))
 
-        # 绘制轨迹
+        # draw trajectory 
         if self.recording and len(self.landmark_trail) > 1:
             for i in range(1, len(self.landmark_trail)):
                 cv2.line(frame, self.landmark_trail[i - 1], self.landmark_trail[i], (0, 255, 0), 2)
@@ -219,6 +219,7 @@ class DataCollection:
 
         cap.release()
         cv2.destroyAllWindows()
+        return frame_landmarks_data
 
 
 if __name__ == '__main__':

@@ -81,9 +81,9 @@ class MotionCorrelationEnhanced:
             return States
 
 if __name__ == "__main__":
-    # 示例输入数据
-    P_in = np.random.rand(100, 2)  # T x 2 矩阵
-    P_out_list = [np.random.rand(100, 2) for _ in range(5)]  # 多个目标的 T x 2 矩阵
+    # show data
+    P_in = np.random.rand(100, 2)  # T x 2 matrix
+    P_out_list = [np.random.rand(100, 2) for _ in range(5)]  #  many T x 2 matrix
 
     # Pursuits Algorithm
     pursuits = MotionCorrelationEnhanced.PursuitsAlgorithm(tau=0.5, N=10)
